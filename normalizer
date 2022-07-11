@@ -1,0 +1,76 @@
+#!/usr/bin/python3
+import pytz
+import re
+import time
+import pandas as pd
+import sys
+from datetime import datetime, timedelta
+from dateutil.parser import parse
+from numpy import float64
+
+INPUT_DURATION_FORMAT = '%H:%M:%S.%f' # 'HH:MM:SS.MS'
+MILISECONDS_IN_HOUR = 3600000
+
+def convert_duration_to_milliseconds(duration):
+    '''Takes in duration time string in INPUT_DURATION_FORMAT, converts to and returns total number of milliseconds
+        If hours are greater than 24, must convert to correct datetime format before applying conversion
+    '''
+    substrings = duration.split(':')
+    total_hours = int(substrings[0])
+    if total_hours < 24:
+        return time.mktime(time.strptime(duration, INPUT_DURATION_FORMAT))*1000
+    else:
+        return convert_duration_to_milliseconds(':'.join([str(total_hours%24)] + substrings[1:])) + (total_hours - total_hours%24) * MILISECONDS_IN_HOUR
+
+
+def sanitize_zip_code(zip_code):
+    '''Takes in zip_code, checks what datatype it is, then pads it with zeroes
+        If not any int, float, or str type; returns input back
+    '''
+    if isinstance(zip_code, str):
+        return zip_code.zfill(5)
+    if isinstance(int, float, float64):
+        return f'{int(zip_code):05}'
+    return zip_code
+
+
+if __name__ == '__main__':
+    rows = []
+    input_columns = []
+    input_df = pd.DataFrame()
+    for row in sys.stdin:
+        row = row.encode('utf-8').decode('utf-8', 'replace').strip()
+        columns = row.split(',')
+        if len(input_columns) == 0:
+            input_columns = columns
+            input_df = pd.DataFrame(columns=input_columns)
+        else:
+            address_indexes = [index for index, ch in enumerate(row) if ch == '\"']
+            address = "".join(re.findall(r'"([^"]*)"', row))
+            row_cols = []
+            if address_indexes:
+                if row[address_indexes[1]:].count(',') >= 6: # Not enough commas after first pair of quotes
+                    row_cols = (row[:address_indexes[0]] + row[address_indexes[1]+2:]).split(',')
+                    row_cols.insert(1, address)
+                else:
+                    row_cols = row.split(',')
+            else:
+                row_cols = row.split(',')
+            if len(row_cols) > len(input_columns): # Account for commas in Notes section
+                row_cols[len(input_columns):] = [','.join(row_cols[len(input_columns)-1:])]
+            curr_row_df = pd.DataFrame({col: [row_cols[index]] for index, col in enumerate(input_columns)}, columns=input_columns)
+            try:
+                curr_row_df['Timestamp'] = curr_row_df.apply(lambda row: (parse(row['Timestamp']) + timedelta(hours=3)).isoformat(), axis=1)
+                curr_row_df['FooDuration'] = curr_row_df.apply(lambda row: convert_duration_to_milliseconds(row['FooDuration']), axis=1)
+                curr_row_df['BarDuration'] = curr_row_df.apply(lambda row: convert_duration_to_milliseconds(row['BarDuration']), axis=1)
+                curr_row_df['TotalDuration'] = curr_row_df['FooDuration'] + curr_row_df['BarDuration']
+                curr_row_df['FullName'] = curr_row_df['FullName'].str.upper()
+                curr_row_df['ZIP'] = curr_row_df.apply(lambda row: sanitize_zip_code(row['ZIP']), axis=1)
+
+            except Exception as ex:
+                sys.stderr.write(f'Warning, the following row is unparseable and will be skipped: {row}')
+                continue
+            input_df = pd.concat([input_df, curr_row_df], ignore_index=True)
+
+    print(input_df.to_csv(index=False))
+
